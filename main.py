@@ -11,29 +11,28 @@ class RepoMonitor(FileSystemEventHandler):
     def __init__(self, gui):
         self.gui = gui
 
-    def on_modified(self, event):
-        if not event.is_directory:
+    def on_any_event(self, event):
+        # Schedule a refresh only for relevant events
+        if not event.src_path.endswith('transcribe.txt'):
             self.gui.schedule_refresh()
-
-    def on_created(self, event):
-        self.gui.schedule_refresh()
-
-    def on_deleted(self, event):
-        self.gui.schedule_refresh()
 
 
 class GUI(tk.Tk):
+    BINARY_EXTENSIONS = {'.exe', '.dll', '.so', '.bin', '.jpg', '.jpeg', '.png',
+                         '.gif', '.mp3', '.mp4', '.avi', '.mov', '.pdf', '.zip',
+                         '.tar', '.gz', '.7z', '.pyc'}
+
     def __init__(self):
         super().__init__()
         self.title("Repo Monitor")
-        self.geometry("500x500")
+        self.geometry("600x600")
         self.path = filedialog.askdirectory(title="Select the repository to monitor")
-        self.check_vars = {}
-        self.check_buttons = {}
+        self.listboxes = {}
+        self.labels = {}
         self.refresh_scheduled = False
 
         self.create_widgets()
-        self.refresh_files(initial=True)
+        self.refresh_files()  # Populate initial file list
 
     def create_widgets(self):
         self.frame = tk.Frame(self)
@@ -57,40 +56,57 @@ class GUI(tk.Tk):
         self.loading_label = tk.Label(self, text="", fg="green")
         self.loading_label.pack(side="bottom")
 
-    def refresh_files(self, initial=False):
-        new_files = set()
+    def is_visible(self, path):
+        return not os.path.basename(path).startswith('.')
+
+    def is_binary_file(self, filename):
+        return os.path.splitext(filename)[1].lower() in self.BINARY_EXTENSIONS
+
+    def refresh_files(self):
+        current_directories = {}
 
         for root, dirs, files in os.walk(self.path):
-            # Remove hidden directories (those starting with a dot)
-            dirs[:] = [d for d in dirs if not d.startswith('.')]
-            for file in files:
-                if file == 'transcribe.txt':
-                    continue
-                full_path = os.path.join(root, file)
-                new_files.add(full_path)
+            # Exclude hidden directories and files
+            dirs[:] = [d for d in dirs if self.is_visible(d)]
+            relevant_files = [
+                f for f in files if self.is_visible(f) and f != 'transcribe.txt' and not self.is_binary_file(f)
+            ]
+            if relevant_files:
+                rel_dir = os.path.relpath(root, self.path)
+                current_directories[rel_dir] = relevant_files
 
-        # Add new files
-        for file_path in new_files:
-            if file_path not in self.check_vars:
-                var = tk.BooleanVar(value=True)
-                display_name = os.path.relpath(file_path, self.path)
-                chk = tk.Checkbutton(
-                    self.scrollable_frame,
-                    text=display_name,
-                    variable=var,
-                    command=self.write_to_file
-                )
-                chk.pack(anchor='w')
-                self.check_vars[file_path] = var
-                self.check_buttons[file_path] = chk
+        # Add or update listboxes for current directories
+        for directory, file_list in current_directories.items():
+            if directory not in self.listboxes:
+                label = tk.Label(self.scrollable_frame, text=directory)
+                label.pack(anchor='w')
+                listbox = tk.Listbox(self.scrollable_frame, selectmode=tk.MULTIPLE, exportselection=0)
+                listbox_height = min(len(file_list), 10)
+                listbox.config(height=listbox_height)
+                listbox.pack(fill=tk.X)
+                listbox.bind('<<ListboxSelect>>', lambda e: self.write_to_file())
 
-        # Remove checkboxes for files that no longer exist
-        for file_path in list(self.check_vars.keys()):
-            if file_path not in new_files:
-                self.check_buttons[file_path].destroy()
-                del self.check_vars[file_path]
-                del self.check_buttons[file_path]
+                for file in file_list:
+                    listbox.insert(tk.END, file)
 
+                self.listboxes[directory] = listbox
+                self.labels[directory] = label
+            else:
+                # Update existing listboxes
+                listbox = self.listboxes[directory]
+                listbox.delete(0, tk.END)
+                for file in file_list:
+                    listbox.insert(tk.END, file)
+
+        # Remove listboxes and associated labels for directories that no longer exist
+        existing_directories = set(self.listboxes.keys())
+        for directory in existing_directories - set(current_directories.keys()):
+            self.listboxes[directory].destroy()
+            del self.listboxes[directory]
+            self.labels[directory].destroy()
+            del self.labels[directory]
+
+        # Write the current selected files to transcribe.txt
         self.write_to_file()
 
     def schedule_refresh(self):
@@ -100,19 +116,25 @@ class GUI(tk.Tk):
 
     def write_to_file(self):
         self.loading_label.config(text="Processing...")
+        output_path = os.path.join(self.path, 'transcribe.txt')
+
         try:
-            with open(os.path.join(self.path, 'transcribe.txt'), 'w', encoding='utf-8') as f:
-                for file_path, var in self.check_vars.items():
-                    if var.get():
-                        corrected_path = file_path.replace("\\", "/")
+            with open(output_path, 'w', encoding='utf-8') as f:
+                for directory, listbox in self.listboxes.items():
+                    selected_indices = listbox.curselection()
+                    for index in selected_indices:
+                        selected_file = listbox.get(index)
+                        full_path = os.path.abspath(os.path.join(self.path, directory, selected_file))
+                        corrected_path = full_path.replace("\\", "/")
                         f.write(f"{corrected_path}\n")
                         try:
-                            with open(file_path, 'r', encoding='utf-8') as content_file:
+                            with open(full_path, 'r', encoding='utf-8') as content_file:
                                 f.write(content_file.read() + "\n\n")
-                        except UnicodeDecodeError as e:
-                            print(f"Error reading {file_path}: {e}")
+                        except (FileNotFoundError, UnicodeDecodeError) as e:
+                            print(f"Error processing {full_path}: {e}")
         except Exception as e:
-            print("Error:", e)
+            print(f"Write error: {e}")
+
         self.loading_label.config(text="")
         self.refresh_scheduled = False
 
@@ -120,8 +142,7 @@ class GUI(tk.Tk):
 def monitor_directory(gui):
     event_handler = RepoMonitor(gui)
     observer = Observer()
-    # Schedule the observer to watch the directory recursively
-    observer.schedule(event_handler, gui.path, recursive=True)
+    observer.schedule(event_handler, gui.path, recursive=True)  # Ensure recursive watching
     observer.start()
     try:
         while True:
