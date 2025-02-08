@@ -101,13 +101,16 @@ class GUI(tk.Tk):
     def write_to_file(self):
         self.loading_label.config(text="Processing...")
         try:
-            with open(os.path.join(self.path, 'transcribe.txt'), 'w') as f:
+            with open(os.path.join(self.path, 'transcribe.txt'), 'w', encoding='utf-8') as f:
                 for file_path, var in self.check_vars.items():
                     if var.get():
                         corrected_path = file_path.replace("\\", "/")
                         f.write(f"{corrected_path}\n")
-                        with open(file_path, 'r') as content_file:
-                            f.write(content_file.read() + "\n\n")
+                        try:
+                            with open(file_path, 'r', encoding='utf-8') as content_file:
+                                f.write(content_file.read() + "\n\n")
+                        except UnicodeDecodeError as e:
+                            print(f"Error reading {file_path}: {e}")
         except Exception as e:
             print("Error:", e)
         self.loading_label.config(text="")
