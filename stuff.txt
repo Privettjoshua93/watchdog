@@ -1,3 +1,0 @@
-https://github.com/Privettjoshua93/watchdog.git
-
-pip install watchdog
